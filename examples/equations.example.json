@@ -1,0 +1,27 @@
+{
+  "input": "draft.docx",
+  "output": "draft-with-equations.docx",
+  "pdf": "draft-with-equations.pdf",
+  "equations": [
+    {
+      "anchor": "[[MT:energy]]",
+      "latex": "E=mc^2",
+      "mode": "inline"
+    },
+    {
+      "anchor": "[[MT:integral]]",
+      "latex": "\\int_0^1 x^2\\,dx=\\frac{1}{3}",
+      "mode": "display"
+    },
+    {
+      "anchor": "[[MT:quadratic]]",
+      "latex": "x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}",
+      "mode": "right-numbered"
+    },
+    {
+      "bookmark": "mt_momentum",
+      "latex": "p=mv",
+      "mode": "inline"
+    }
+  ]
+}

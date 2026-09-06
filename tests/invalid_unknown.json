@@ -1,0 +1,12 @@
+{
+  "input": "output/input.docx",
+  "output": "output/should-not-exist.docx",
+  "number_format": "(#E1)",
+  "equations": [
+    {
+      "anchor": "[[EQ:inline]]",
+      "latex": "E=mc^2",
+      "mode": "inline"
+    }
+  ]
+}

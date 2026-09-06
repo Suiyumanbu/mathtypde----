@@ -1,0 +1,11 @@
+dist/
+tests/output/
+tests/install-root/
+tests/package-smoke/
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

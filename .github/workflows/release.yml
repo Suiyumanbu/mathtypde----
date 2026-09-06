@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Validate release layout
+        run: python tools/validate_release.py
+
+      - name: Validate PowerShell, C#, and manifest handling
+        shell: pwsh
+        run: ./scripts/validate.ps1
+
+      - name: Verify tag matches VERSION
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $expected = "v$version"
+          if ($env:GITHUB_REF_NAME -cne $expected) {
+            throw "Tag '$env:GITHUB_REF_NAME' does not match VERSION '$version'. Expected '$expected'."
+          }
+
+      - name: Build release bundle
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zips = @(Get-ChildItem -LiteralPath dist -Filter '*.zip' -File)
+          if ($zips.Count -ne 1) { throw "Expected one release ZIP; found $($zips.Count)." }
+          $zip = $zips[0]
+          $checksum = Get-Item -LiteralPath "$($zip.FullName).sha256"
+          & gh release create $env:GITHUB_REF_NAME $zip.FullName $checksum.FullName --verify-tag --generate-notes --title $env:GITHUB_REF_NAME
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release creation failed.' }
