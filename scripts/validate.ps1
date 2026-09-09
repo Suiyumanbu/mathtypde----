@@ -29,7 +29,9 @@ try {
     $null = New-Item -ItemType Directory -Path $tempRoot
     $inputPath = Join-Path $tempRoot 'input.docx'
     $manifestPath = Join-Path $tempRoot 'equations.json'
+    $numberExistingPath = Join-Path $tempRoot 'number-existing.json'
     $invalidPath = Join-Path $tempRoot 'invalid.json'
+    $invalidOperationPath = Join-Path $tempRoot 'invalid-operation.json'
     $null = New-Item -ItemType File -Path $inputPath
 
     $manifest = [ordered]@{
@@ -49,6 +51,23 @@ try {
         [Text.UTF8Encoding]::new($false)
     )
     & $runtimeScript -Manifest $manifestPath -ValidateOnly
+
+    $numberExisting = [ordered]@{
+        input = 'input.docx'
+        output = 'numbered.docx'
+        equations = @(
+            [ordered]@{
+                equationIndex = 1
+                operation = 'number-existing'
+            }
+        )
+    }
+    [IO.File]::WriteAllText(
+        $numberExistingPath,
+        ($numberExisting | ConvertTo-Json -Depth 5),
+        [Text.UTF8Encoding]::new($false)
+    )
+    & $runtimeScript -Manifest $numberExistingPath -ValidateOnly
 
     $invalid = [ordered]@{
         input = 'input.docx'
@@ -75,6 +94,38 @@ try {
     }
     if (-not $rejected) {
         throw 'The runtime accepted an unknown manifest property.'
+    }
+
+    $invalidOperation = [ordered]@{
+        input = 'input.docx'
+        output = 'invalid-operation-output.docx'
+        equations = @(
+            [ordered]@{
+                bookmark = 'mt_existing'
+                operation = 'number-existing'
+                latex = 'E=mc^2'
+            }
+        )
+    }
+    [IO.File]::WriteAllText(
+        $invalidOperationPath,
+        ($invalidOperation | ConvertTo-Json -Depth 5),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $rejected = $false
+    try {
+        & $runtimeScript -Manifest $invalidOperationPath -ValidateOnly
+    }
+    catch {
+        if ($_.Exception.Message -match 'does not accept latex or mode') {
+            $rejected = $true
+        }
+        else {
+            throw
+        }
+    }
+    if (-not $rejected) {
+        throw 'The runtime accepted LaTeX for number-existing.'
     }
 }
 finally {

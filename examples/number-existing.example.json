@@ -1,0 +1,14 @@
+{
+  "input": "draft-with-display-equations.docx",
+  "output": "draft-with-native-numbers.docx",
+  "equations": [
+    {
+      "bookmark": "mt_display_energy",
+      "operation": "number-existing"
+    },
+    {
+      "equationIndex": 4,
+      "operation": "number-existing"
+    }
+  ]
+}

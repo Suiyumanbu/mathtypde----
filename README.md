@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-`mathtype-word` inserts Codex-generated LaTeX as editable MathType equations at exact locations in a Word document. It supports equations within a sentence, centered display equations, and right-numbered equations managed by MathType's native numbering commands.
+`mathtype-word` inserts Codex-generated LaTeX as editable MathType equations at exact locations in a Word document. It also adds native right-side numbers to existing MathType display equations without rebuilding their OLE payloads.
 
 The repository follows the [OpenAI skill folder format](https://learn.chatgpt.com/docs/build-skills): the installable skill lives in `mathtype-word/`, starts with `SKILL.md`, and keeps its scripts and references beside it.
 
@@ -11,6 +11,7 @@ The repository follows the [OpenAI skill folder format](https://learn.chatgpt.co
 - Converts LaTeX through MathType's own TeX translator into editable `Equation.DSMT4` OLE objects.
 - Locates insertion points by unique text anchors or Word bookmarks.
 - Supports `inline`, `display`, and `right-numbered` modes.
+- Converts existing display equations to native right-numbered form by bookmark or MathType equation index, without rerunning TeX conversion.
 - Uses MathType-native `MTEqn`/`MTPlaceRef` numbering so MathType's number-management commands remain compatible.
 - Opens the source read-only, refuses to overwrite output, and publishes only after the whole job succeeds.
 - Produces a structural JSON report and can export a PDF for visual review.
@@ -57,7 +58,7 @@ Restart Codex or start a new task if the skill is not discovered immediately.
 
 ## Use from Codex
 
-Put unique anchors in the generated DOCX, then ask Codex to use the skill. For example:
+Put unique anchors or bookmarks in the generated DOCX, then ask Codex to use the skill. Existing MathType equations can also be addressed by index. For example:
 
 ```text
 Use $mathtype-word to replace [[MT:energy]] with E=mc^2 as an inline
@@ -68,10 +69,6 @@ as a right-numbered MathType equation. Export a PDF and inspect the result.
 Codex creates a JSON manifest and runs the bundled PowerShell bridge. You can also call it directly:
 
 ```powershell
-& .\mathtype-word\scripts\insert-equations.ps1 `
-  -Manifest .\examples\equations.example.json `
-  -ValidateOnly
-
 & .\mathtype-word\scripts\insert-equations.ps1 `
   -Manifest .\examples\equations.example.json
 ```
@@ -86,6 +83,21 @@ Manifest paths are relative to the JSON file. Copy `examples/equations.example.j
 
 See [the manifest reference](mathtype-word/references/manifest.md) and [LaTeX compatibility notes](mathtype-word/references/latex-compatibility.md) for the complete contract.
 
+To number an existing display equation, use a bookmark around its OLE object or its one-based index among MathType equations:
+
+```json
+{
+  "input": "draft-with-display-equations.docx",
+  "output": "draft-with-native-numbers.docx",
+  "equations": [
+    {"bookmark": "mt_display_energy", "operation": "number-existing"},
+    {"equationIndex": 4, "operation": "number-existing"}
+  ]
+}
+```
+
+The runtime validates manifests and the local installation during a normal run. `-ValidateOnly` and `-Probe` are optional diagnostics rather than required preflight steps. Omit the `pdf` field during rapid iteration; add it when layout review is needed.
+
 ## Validate and test
 
 Static checks do not require Word or MathType:
@@ -95,7 +107,7 @@ python tools/validate_release.py
 & .\scripts\validate.ps1
 ```
 
-The integration test creates a DOCX fixture, inserts six equations, exports a PDF, and checks the OLE objects and native numbering fields. It requires a local Word/MathType installation:
+The integration test inserts seven equations, then numbers two existing display equations in a second pass. It verifies that OLE payloads are reused, downstream sequence values are updated, unrelated fields are preserved, and both PDFs export successfully. It requires a local Word/MathType installation:
 
 ```powershell
 python -m pip install -r tests/requirements.txt

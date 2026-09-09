@@ -50,6 +50,17 @@ function Find-Anchor($Document, $Item) {
     return $range
 }
 
+function Get-ItemOperation($Item) {
+    if ($null -ne $Item.PSObject.Properties['operation']) { return [string]$Item.operation }
+    return 'insert-latex'
+}
+
+function Get-ItemLocation($Item) {
+    if ($null -ne $Item.PSObject.Properties['anchor']) { return [string]$Item.anchor }
+    if ($null -ne $Item.PSObject.Properties['bookmark']) { return [string]$Item.bookmark }
+    return "MathType equation #$([int]$Item.equationIndex)"
+}
+
 function Invoke-MathTypeMacro($Word, [string]$Name) {
     Write-Host "MathType macro: $Name"
     $null = $Word.Run($Name)
@@ -65,6 +76,53 @@ function Find-InsertedEquation($Document, [int]$ExpectedStart, [int]$ExpectedInd
         throw "The new inline object near position $ExpectedStart is not the expected MathType equation."
     }
     return $shape
+}
+
+function Get-FieldCodes($Range) {
+    $codes = [Collections.Generic.List[string]]::new()
+    for ($fieldIndex = 1; $fieldIndex -le $Range.Fields.Count; $fieldIndex++) {
+        $codes.Add([string]$Range.Fields.Item($fieldIndex).Code.Text)
+    }
+    return $codes.ToArray()
+}
+
+function Add-NativeEquationNumber($Word, $Shape) {
+    $paragraph = $Shape.Range.Paragraphs.Item(1).Range
+    $existingCodes = @(Get-FieldCodes $paragraph)
+    if (($existingCodes -match 'MACROBUTTON MTPlaceRef') -or ($existingCodes -match 'SEQ MTEqn')) {
+        throw 'The target equation already has a MathType native number.'
+    }
+
+    $tail = $Shape.Range.Duplicate
+    $tail.Collapse(0)
+    $tail.Select()
+    $Word.Selection.TypeText("`t")
+    Invoke-MathTypeMacro $Word 'MTCommand_InsertEqnNum'
+
+    $codes = @(Get-FieldCodes $paragraph)
+    if (-not ($codes -match 'MACROBUTTON MTPlaceRef') -or -not ($codes -match 'SEQ MTEqn')) {
+        throw 'MathType native equation-number fields were not created.'
+    }
+    return [int]$paragraph.Fields.Count
+}
+
+function Update-NativeEquationNumbers($Document, [int]$Start) {
+    $searchRange = $Document.Range($Start, $Document.Content.End)
+    $paragraphStarts = [Collections.Generic.SortedSet[int]]::new()
+    for ($fieldIndex = 1; $fieldIndex -le $searchRange.Fields.Count; $fieldIndex++) {
+        $field = $searchRange.Fields.Item($fieldIndex)
+        if ([string]$field.Code.Text -match 'MACROBUTTON MTPlaceRef') {
+            $null = $paragraphStarts.Add([int]$field.Code.Paragraphs.Item(1).Range.Start)
+        }
+    }
+    foreach ($paragraphStart in $paragraphStarts) {
+        $paragraph = $Document.Range($paragraphStart, $paragraphStart).Paragraphs.Item(1).Range
+        # MTPlaceRef contains nested sequence fields. Two targeted passes update the
+        # inner sequence and then its enclosing display without touching unrelated fields.
+        $null = $paragraph.Fields.Update()
+        $null = $paragraph.Fields.Update()
+    }
+    return $paragraphStarts.Count
 }
 
 function Get-PeBitness([string]$Path) {
@@ -126,30 +184,56 @@ $items = @($config.equations)
 if ($items.Count -eq 0) { throw 'The equations array is empty.' }
 $seen = @{}
 foreach ($item in $items) {
-    $itemAllowed = @('anchor', 'bookmark', 'latex', 'mode')
+    $itemAllowed = @('anchor', 'bookmark', 'equationIndex', 'latex', 'mode', 'operation')
     foreach ($property in $item.PSObject.Properties.Name) {
         if ($property -notin $itemAllowed) { throw "Unknown equation property: $property" }
     }
-    if ($null -eq $item.PSObject.Properties['mode'] -or $item.mode -notin @('inline', 'display', 'right-numbered')) {
-        throw 'mode must be inline, display, or right-numbered.'
-    }
-    if ($null -eq $item.PSObject.Properties['latex'] -or -not ($item.latex -is [string])) {
-        throw 'Each equation needs a LaTeX string.'
-    }
-    $latex = Get-NormalizedLatex ([string]$item.latex)
-    if ([string]::IsNullOrWhiteSpace($latex)) { throw 'LaTeX cannot be empty.' }
-    if ($latex -match '\\(documentclass|usepackage|newcommand|renewcommand|def|input|include)\b') {
-        throw 'Pass a self-contained equation body, without a LaTeX document or custom macro definitions.'
+    $operation = Get-ItemOperation $item
+    if ($operation -notin @('insert-latex', 'number-existing')) {
+        throw "Unsupported equation operation: $operation"
     }
     $hasAnchor = $null -ne $item.PSObject.Properties['anchor']
     $hasBookmark = $null -ne $item.PSObject.Properties['bookmark']
-    if ($hasAnchor -eq $hasBookmark) { throw 'Specify exactly one locator: anchor or bookmark.' }
-    $locator = if ($hasAnchor) { [string]$item.anchor } else { [string]$item.bookmark }
+    $hasEquationIndex = $null -ne $item.PSObject.Properties['equationIndex']
+
+    if ($operation -eq 'insert-latex') {
+        if ($hasAnchor -eq $hasBookmark -or $hasEquationIndex) {
+            throw 'A LaTeX insertion needs exactly one locator: anchor or bookmark.'
+        }
+        if ($null -eq $item.PSObject.Properties['mode'] -or $item.mode -notin @('inline', 'display', 'right-numbered')) {
+            throw 'mode must be inline, display, or right-numbered.'
+        }
+        if ($null -eq $item.PSObject.Properties['latex'] -or -not ($item.latex -is [string])) {
+            throw 'Each LaTeX insertion needs a LaTeX string.'
+        }
+        $latex = Get-NormalizedLatex ([string]$item.latex)
+        if ([string]::IsNullOrWhiteSpace($latex)) { throw 'LaTeX cannot be empty.' }
+        if ($latex -match '\\(documentclass|usepackage|newcommand|renewcommand|def|input|include)\b') {
+            throw 'Pass a self-contained equation body, without a LaTeX document or custom macro definitions.'
+        }
+    }
+    else {
+        if ($hasAnchor -or ($hasBookmark -eq $hasEquationIndex)) {
+            throw 'number-existing needs exactly one locator: bookmark or equationIndex.'
+        }
+        if ($null -ne $item.PSObject.Properties['latex'] -or $null -ne $item.PSObject.Properties['mode']) {
+            throw 'number-existing does not accept latex or mode.'
+        }
+        if ($hasEquationIndex) {
+            $parsedIndex = 0
+            if (-not [int]::TryParse([string]$item.equationIndex, [ref]$parsedIndex) -or $parsedIndex -lt 1) {
+                throw 'equationIndex must be a positive integer.'
+            }
+        }
+    }
+
+    $locator = Get-ItemLocation $item
     if ([string]::IsNullOrWhiteSpace($locator) -or $locator -match '[\r\n\^]') {
         throw 'Locator is empty or contains unsupported characters.'
     }
-    if ($seen.ContainsKey($locator)) { throw "Duplicate locator: $locator" }
-    $seen[$locator] = $true
+    $locatorKey = if ($hasAnchor) { "anchor:$locator" } elseif ($hasBookmark) { "bookmark:$locator" } else { "equationIndex:$parsedIndex" }
+    if ($seen.ContainsKey($locatorKey)) { throw "Duplicate locator: $locator" }
+    $seen[$locatorKey] = $true
 }
 }
 
@@ -189,9 +273,17 @@ $word = $null
 $document = $null
 $loadedAddIn = $null
 $completed = [Collections.Generic.List[object]]::new()
-$numberedCount = @($items | Where-Object mode -eq 'right-numbered').Count
+$numberedCount = @($items | Where-Object {
+    $operation = Get-ItemOperation $_
+    if ($operation -eq 'number-existing') { return $true }
+    return [string]$_.mode -eq 'right-numbered'
+}).Count
 $hadDeferredUpdates = $false
 $originalDeferredUpdates = $null
+$minimumNumberStart = $null
+$updatedNumberParagraphs = 0
+$timings = [ordered]@{}
+$totalTimer = [Diagnostics.Stopwatch]::StartNew()
 $tempId = [Guid]::NewGuid().ToString('N')
 $outputDirectory = Split-Path $outputPath
 $tempDocx = Join-Path $outputDirectory ".$([IO.Path]::GetFileNameWithoutExtension($outputPath)).$tempId.docx"
@@ -202,6 +294,7 @@ if ($pdfPath) {
 }
 try {
     # Use a separate Word instance and never attach to the user's open documents.
+    $phaseTimer = [Diagnostics.Stopwatch]::StartNew()
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
     $word.DisplayAlerts = 0
@@ -209,127 +302,266 @@ try {
     $word.Options.UpdateLinksAtOpen = $false
     $alreadyLoaded = @($word.Templates | Where-Object { $_.FullName -eq $template }).Count -gt 0
     if (-not $alreadyLoaded) { $loadedAddIn = $word.AddIns.Add($template, $true) }
+    $phaseTimer.Stop()
+    $timings.wordStartupAndAddInMilliseconds = [Math]::Round($phaseTimer.Elapsed.TotalMilliseconds, 1)
 
+    $phaseTimer.Restart()
     $document = $word.Documents.Open($inputPath, $false, $true, $false)
     $document.Activate()
     $word.ActiveWindow.View.Type = 3
     if ($document.ProtectionType -ne -1) { throw 'Remove document protection before inserting equations.' }
     if ($document.TrackRevisions) { throw 'Turn off Track Changes and resolve revisions before inserting equations.' }
-
-    $ranges = [Collections.Generic.List[object]]::new()
-    foreach ($item in $items) {
-        $range = Find-Anchor $document $item
-        if ($range.Fields.Count -gt 0 -or $range.InlineShapes.Count -gt 0) {
-            throw 'An anchor or bookmark must not contain an existing field or OLE object.'
-        }
-        $paragraphText = ([string]$range.Paragraphs.Item(1).Range.Text).Trim([char[]]" `t`r`n")
-        $anchorText = ([string]$range.Text).Trim([char[]]" `t`r`n")
-        if ($item.mode -ne 'inline') {
-            if ($range.Information(12)) { throw 'Display equations inside tables are not supported by this version.' }
-            if ($paragraphText -ne $anchorText) {
-                throw 'A display or right-numbered locator must occupy its own paragraph.'
-            }
-        }
-        foreach ($prior in $ranges) {
-            if ($range.Start -lt $prior.End -and $range.End -gt $prior.Start) { throw 'Equation locators overlap.' }
-        }
-        $ranges.Add($range)
-    }
+    $phaseTimer.Stop()
+    $timings.openDocumentMilliseconds = [Math]::Round($phaseTimer.Elapsed.TotalMilliseconds, 1)
 
     if ($numberedCount -gt 0) {
+        $phaseTimer.Restart()
         if (-not ('WordComBridge' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'WordComBridge.cs') }
-        $hadDeferredUpdates = [WordComBridge]::HasCustomProperty($document, 'MTDeferFieldUpdate')
-        if ($hadDeferredUpdates) {
-            $originalDeferredUpdates = [WordComBridge]::GetCustomProperty($document, 'MTDeferFieldUpdate')
-        }
+        $hadDeferredUpdates = [WordComBridge]::TryGetCustomProperty(
+            $document,
+            'MTDeferFieldUpdate',
+            [ref]$originalDeferredUpdates
+        )
         # MathType's insertion macros otherwise update every field in every story range.
         [WordComBridge]::SetCustomProperty($document, 'MTDeferFieldUpdate', '1')
-        $hasSection = $false
-        foreach ($field in $document.Fields) {
-            if ($field.Code.Text -match 'MTEditEquationSection') { $hasSection = $true; break }
+        $sectionValue = $null
+        $hasSection = [WordComBridge]::TryGetCustomProperty(
+            $document,
+            'MTEquationSection',
+            [ref]$sectionValue
+        )
+        if (-not $hasSection) {
+            for ($fieldIndex = 1; $fieldIndex -le $document.Fields.Count; $fieldIndex++) {
+                if ($document.Fields.Item($fieldIndex).Code.Text -match 'MTEditEquationSection') {
+                    $hasSection = $true
+                    break
+                }
+            }
         }
         if (-not $hasSection) {
             $document.Range(0, 0).Select()
             Invoke-MathTypeMacro $word 'MTCommand_InsertNextChapter'
         }
+        $phaseTimer.Stop()
+        $timings.numberingSetupMilliseconds = [Math]::Round($phaseTimer.Elapsed.TotalMilliseconds, 1)
+    }
+    else {
+        $timings.numberingSetupMilliseconds = 0
     }
 
-    for ($index = 0; $index -lt $items.Count; $index++) {
-        $item = $items[$index]
-        $range = Find-Anchor $document $item
-        $location = if ($null -ne $item.PSObject.Properties['anchor']) { [string]$item.anchor } else { [string]$item.bookmark }
-        Write-Host "Inserting $($index + 1)/$($items.Count): $location [$($item.mode)]"
+    $phaseTimer.Restart()
+    $mathTypeShapes = [Collections.Generic.List[object]]::new()
+    $initialInlineShapeStarts = [Collections.Generic.List[int]]::new()
+    $needsInitialShapePositions = @($items | Where-Object {
+        (Get-ItemOperation $_) -eq 'insert-latex'
+    }).Count -gt 0
+    $needsEquationIndex = @($items | Where-Object {
+        (Get-ItemOperation $_) -eq 'number-existing' -and
+        $null -ne $_.PSObject.Properties['equationIndex']
+    }).Count -gt 0
+    if ($needsInitialShapePositions -or $needsEquationIndex) {
+        $initialShapeCount = [int]$document.InlineShapes.Count
+        for ($shapeIndex = 1; $shapeIndex -le $initialShapeCount; $shapeIndex++) {
+            $candidate = $document.InlineShapes.Item($shapeIndex)
+            if ($needsInitialShapePositions) {
+                $initialInlineShapeStarts.Add([int]$candidate.Range.Start)
+            }
+            if ($needsEquationIndex) {
+                $candidateProgId = $null
+                try { $candidateProgId = [string]$candidate.OLEFormat.ProgID } catch { continue }
+                if ($candidateProgId -eq 'Equation.DSMT4') {
+                    $mathTypeShapes.Add($candidate)
+                }
+            }
+        }
+    }
 
-        $latex = Get-NormalizedLatex ([string]$item.latex)
-        $tex = if ($item.mode -eq 'inline') { '$' + $latex + '$' } else { '\[' + $latex + '\]' }
-        $start = [int]$range.Start
-        $beforeCount = [int]$document.InlineShapes.Count
-        $precedingShapeCount = 0
-        foreach ($existingShape in $document.InlineShapes) {
-            if ([int]$existingShape.Range.Start -lt $start) { $precedingShapeCount++ }
-        }
-        $standaloneInline = $false
-        if ($item.mode -eq 'inline') {
-            $paragraphText = ([string]$range.Paragraphs.Item(1).Range.Text).Trim([char[]]" `t`r`n")
-            $anchorText = ([string]$range.Text).Trim([char[]]" `t`r`n")
-            $standaloneInline = ($paragraphText -eq $anchorText)
-        }
-        if ($standaloneInline) {
-            # Surround the selected TeX temporarily so MathType does not offer an interactive
-            # "convert to display" dialog for an inline object in an otherwise empty paragraph.
-            $range.Text = 'x' + $tex + 'x'
-            $texRange = $document.Range($start + 1, $start + 1 + $tex.Length)
+    $plan = [Collections.Generic.List[object]]::new()
+    foreach ($item in $items) {
+        $operation = Get-ItemOperation $item
+        $location = Get-ItemLocation $item
+        $existingShape = $null
+        if ($operation -eq 'number-existing') {
+            if ($null -ne $item.PSObject.Properties['bookmark']) {
+                $range = Find-Anchor $document $item
+                if ($range.InlineShapes.Count -ne 1) {
+                    throw "Bookmark '$location' must contain exactly one existing MathType equation."
+                }
+                $existingShape = $range.InlineShapes.Item(1)
+            }
+            else {
+                $equationIndex = [int]$item.equationIndex
+                if ($equationIndex -gt $mathTypeShapes.Count) {
+                    throw "MathType equation index $equationIndex is out of range; found $($mathTypeShapes.Count)."
+                }
+                $existingShape = $mathTypeShapes[$equationIndex - 1]
+                $range = $existingShape.Range.Duplicate
+            }
+            $existingProgId = $null
+            try { $existingProgId = [string]$existingShape.OLEFormat.ProgID } catch {}
+            if ($existingProgId -ne 'Equation.DSMT4') {
+                throw "The target '$location' is not an Equation.DSMT4 object."
+            }
+            $paragraph = $existingShape.Range.Paragraphs.Item(1).Range
+            if ($paragraph.Information(12)) { throw 'Right-numbered equations inside tables are not supported by this version.' }
+            if ($paragraph.InlineShapes.Count -ne 1) {
+                throw 'An existing equation must be the only inline object in its paragraph.'
+            }
+            $ordinaryText = ([string]$paragraph.Text).Replace([string][char]1, '').Trim([char[]]" `t`r`n")
+            if (-not [string]::IsNullOrWhiteSpace($ordinaryText)) {
+                throw 'An existing equation must occupy its own paragraph before it can be numbered.'
+            }
+            $codes = @(Get-FieldCodes $paragraph)
+            if (($codes -match 'MACROBUTTON MTPlaceRef') -or ($codes -match 'SEQ MTEqn')) {
+                throw "The target '$location' is already right-numbered."
+            }
+            $mode = 'right-numbered'
         }
         else {
-            $range.Text = $tex
-            $texRange = $document.Range($start, $start + $tex.Length)
-        }
-        $texRange.Select()
-        Invoke-MathTypeMacro $word 'MTCommand_TeXToggle'
-
-        if ([int]$document.InlineShapes.Count -ne $beforeCount + 1) {
-            throw "MathType did not replace '$location' with exactly one equation object. Check its supported TeX syntax."
-        }
-        $shape = Find-InsertedEquation $document $start ($precedingShapeCount + 1)
-        if ($standaloneInline) {
-            $rightSentinel = $document.Range($shape.Range.End, $shape.Range.End + 1)
-            $leftSentinel = $document.Range($shape.Range.Start - 1, $shape.Range.Start)
-            if ($rightSentinel.Text -ne 'x' -or $leftSentinel.Text -ne 'x') {
-                throw 'Could not remove temporary inline-layout sentinels.'
+            $range = Find-Anchor $document $item
+            if ($range.Fields.Count -gt 0 -or $range.InlineShapes.Count -gt 0) {
+                throw 'An insertion anchor or bookmark must not contain an existing field or OLE object.'
             }
-            $null = $rightSentinel.Delete()
-            $null = $leftSentinel.Delete()
+            $paragraphText = ([string]$range.Paragraphs.Item(1).Range.Text).Trim([char[]]" `t`r`n")
+            $anchorText = ([string]$range.Text).Trim([char[]]" `t`r`n")
+            $mode = [string]$item.mode
+            if ($mode -ne 'inline') {
+                if ($range.Information(12)) { throw 'Display equations inside tables are not supported by this version.' }
+                if ($paragraphText -ne $anchorText) {
+                    throw 'A display or right-numbered locator must occupy its own paragraph.'
+                }
+            }
         }
-        if ($shape.Width -le 0 -or $shape.Height -le 0) { throw 'MathType returned an equation with empty dimensions.' }
+        $initialShapesBefore = @($initialInlineShapeStarts | Where-Object { $_ -lt [int]$range.Start }).Count
+        $plan.Add([pscustomobject]@{
+            Item = $item
+            Operation = $operation
+            Location = $location
+            Mode = $mode
+            Range = $range
+            ExistingShape = $existingShape
+            InitialShapesBefore = $initialShapesBefore
+            Start = [int]$range.Start
+            End = [int]$range.End
+        })
+    }
+    $orderedPlan = @($plan | Sort-Object Start, End)
+    for ($planIndex = 1; $planIndex -lt $orderedPlan.Count; $planIndex++) {
+        $prior = $orderedPlan[$planIndex - 1]
+        $current = $orderedPlan[$planIndex]
+        $overlap = $current.Start -lt $prior.End -and $current.End -gt $prior.Start
+        $sameRange = $current.Start -eq $prior.Start -and $current.End -eq $prior.End
+        if ($overlap -or $sameRange) { throw 'Equation locators overlap or resolve to the same range.' }
+    }
+    $phaseTimer.Stop()
+    $timings.locateAndValidateMilliseconds = [Math]::Round($phaseTimer.Elapsed.TotalMilliseconds, 1)
+
+    $insertedShapeCount = 0
+    for ($index = 0; $index -lt $orderedPlan.Count; $index++) {
+        $target = $orderedPlan[$index]
+        $item = $target.Item
+        $location = [string]$target.Location
+        $mode = [string]$target.Mode
+        $operation = [string]$target.Operation
+        $itemTimer = [Diagnostics.Stopwatch]::StartNew()
+        $conversionMilliseconds = 0
+        $numberingMilliseconds = 0
+        Write-Host "Processing $($index + 1)/$($orderedPlan.Count): $location [$operation -> $mode]"
+
+        if ($operation -eq 'insert-latex') {
+            $conversionTimer = [Diagnostics.Stopwatch]::StartNew()
+            $range = $target.Range.Duplicate
+            $latex = Get-NormalizedLatex ([string]$item.latex)
+            $tex = if ($mode -eq 'inline') { '$' + $latex + '$' } else { '\[' + $latex + '\]' }
+            $start = [int]$range.Start
+            $beforeCount = [int]$document.InlineShapes.Count
+            $standaloneInline = $false
+            if ($mode -eq 'inline') {
+                $paragraphText = ([string]$range.Paragraphs.Item(1).Range.Text).Trim([char[]]" `t`r`n")
+                $anchorText = ([string]$range.Text).Trim([char[]]" `t`r`n")
+                $standaloneInline = ($paragraphText -eq $anchorText)
+            }
+            if ($standaloneInline) {
+                # Surround the selected TeX temporarily so MathType does not offer an interactive
+                # "convert to display" dialog for an inline object in an otherwise empty paragraph.
+                $range.Text = 'x' + $tex + 'x'
+                $texRange = $document.Range($start + 1, $start + 1 + $tex.Length)
+            }
+            else {
+                $range.Text = $tex
+                $texRange = $document.Range($start, $start + $tex.Length)
+            }
+            $texRange.Select()
+            Invoke-MathTypeMacro $word 'MTCommand_TeXToggle'
+
+            if ([int]$document.InlineShapes.Count -ne $beforeCount + 1) {
+                throw "MathType did not replace '$location' with exactly one equation object. Check its supported TeX syntax."
+            }
+            $expectedShapeIndex = [int]$target.InitialShapesBefore + $insertedShapeCount + 1
+            $shape = Find-InsertedEquation $document $start $expectedShapeIndex
+            $insertedShapeCount++
+            if ($standaloneInline) {
+                $rightSentinel = $document.Range($shape.Range.End, $shape.Range.End + 1)
+                $leftSentinel = $document.Range($shape.Range.Start - 1, $shape.Range.Start)
+                if ($rightSentinel.Text -ne 'x' -or $leftSentinel.Text -ne 'x') {
+                    throw 'Could not remove temporary inline-layout sentinels.'
+                }
+                $null = $rightSentinel.Delete()
+                $null = $leftSentinel.Delete()
+            }
+            $conversionTimer.Stop()
+            $conversionMilliseconds = [Math]::Round($conversionTimer.Elapsed.TotalMilliseconds, 1)
+        }
+        else {
+            $shape = $target.ExistingShape
+        }
+
+        $progId = [string]$shape.OLEFormat.ProgID
+        $width = [double]$shape.Width
+        $height = [double]$shape.Height
+        if ($progId -ne 'Equation.DSMT4' -or $width -le 0 -or $height -le 0) {
+            throw 'MathType returned an invalid or empty equation object.'
+        }
 
         $numberFields = 0
-        if ($item.mode -eq 'right-numbered') {
-            $tail = $shape.Range.Duplicate
-            $tail.Collapse(0)
-            $tail.Select()
-            $word.Selection.TypeText("`t")
-            Invoke-MathTypeMacro $word 'MTCommand_InsertEqnNum'
-            $paragraph = $shape.Range.Paragraphs.Item(1).Range
-            $codes = @($paragraph.Fields | ForEach-Object { $_.Code.Text })
-            if (-not ($codes -match 'MACROBUTTON MTPlaceRef') -or -not ($codes -match 'SEQ MTEqn')) {
-                throw 'MathType native equation-number fields were not created.'
+        if ($mode -eq 'right-numbered') {
+            $numberingTimer = [Diagnostics.Stopwatch]::StartNew()
+            $numberFields = Add-NativeEquationNumber $word $shape
+            $numberStart = [int]$shape.Range.Start
+            if ($null -eq $minimumNumberStart -or $numberStart -lt $minimumNumberStart) {
+                $minimumNumberStart = $numberStart
             }
-            $null = $paragraph.Fields.Update()
-            $null = $paragraph.Fields.Update()
-            $numberFields = $paragraph.Fields.Count
+            $numberingTimer.Stop()
+            $numberingMilliseconds = [Math]::Round($numberingTimer.Elapsed.TotalMilliseconds, 1)
         }
 
         if ($null -ne $item.PSObject.Properties['bookmark']) {
             $null = $document.Bookmarks.Add([string]$item.bookmark, $shape.Range)
         }
+        $itemTimer.Stop()
         $completed.Add([pscustomobject]@{
             location = $location
-            mode = [string]$item.mode
-            progId = [string]$shape.OLEFormat.ProgID
-            widthPoints = [Math]::Round([double]$shape.Width, 2)
-            heightPoints = [Math]::Round([double]$shape.Height, 2)
+            operation = $operation
+            source = if ($operation -eq 'number-existing') { 'existing' } else { 'latex' }
+            mode = $mode
+            progId = $progId
+            widthPoints = [Math]::Round($width, 2)
+            heightPoints = [Math]::Round($height, 2)
             nativeNumberFields = $numberFields
+            conversionMilliseconds = $conversionMilliseconds
+            numberingMilliseconds = $numberingMilliseconds
+            durationMilliseconds = [Math]::Round($itemTimer.Elapsed.TotalMilliseconds, 1)
         })
+    }
+
+    if ($null -ne $minimumNumberStart) {
+        $phaseTimer.Restart()
+        $updatedNumberParagraphs = Update-NativeEquationNumbers $document $minimumNumberStart
+        $phaseTimer.Stop()
+        $timings.numberFieldUpdateMilliseconds = [Math]::Round($phaseTimer.Elapsed.TotalMilliseconds, 1)
+    }
+    else {
+        $timings.numberFieldUpdateMilliseconds = 0
     }
 
     if ($numberedCount -gt 0) {
@@ -340,14 +572,25 @@ try {
             [WordComBridge]::DeleteCustomProperty($document, 'MTDeferFieldUpdate')
         }
     }
-    $document.Repaginate()
     $null = [IO.Directory]::CreateDirectory($outputDirectory)
     if ($pdfPath) { $null = [IO.Directory]::CreateDirectory((Split-Path $pdfPath)) }
+
+    $phaseTimer.Restart()
     $document.SaveAs2($tempDocx, 16)
+    $phaseTimer.Stop()
+    $timings.saveDocxMilliseconds = [Math]::Round($phaseTimer.Elapsed.TotalMilliseconds, 1)
 
     if ($pdfPath) {
+        $phaseTimer.Restart()
         $document.ExportAsFixedFormat($tempPdf, 17)
+        $phaseTimer.Stop()
+        $timings.exportPdfMilliseconds = [Math]::Round($phaseTimer.Elapsed.TotalMilliseconds, 1)
     }
+    else {
+        $timings.exportPdfMilliseconds = 0
+    }
+    $totalTimer.Stop()
+    $timings.processingMilliseconds = [Math]::Round($totalTimer.Elapsed.TotalMilliseconds, 1)
 
     [pscustomobject]@{
         input = $inputPath
@@ -357,8 +600,10 @@ try {
         equationRepresentation = 'MathType Equation.DSMT4 OLE'
         numbering = 'MathType native MTPlaceRef and MTEqn fields'
         unrelatedFieldUpdatesSuppressed = ($numberedCount -gt 0)
-        visualReview = 'pending'
-    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $tempReport -Encoding UTF8
+        nativeNumberParagraphsUpdated = $updatedNumberParagraphs
+        timings = [pscustomobject]$timings
+        visualReview = if ($pdfPath) { 'pending' } else { 'not-requested' }
+    } | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $tempReport -Encoding UTF8
 
     # Close the staged DOCX before publishing it. The original remains untouched on any failure.
     $document.Close(0)

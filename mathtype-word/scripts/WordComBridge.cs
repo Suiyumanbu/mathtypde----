@@ -2,33 +2,33 @@ using System;
 
 public static class WordComBridge
 {
-    public static bool HasCustomProperty(object document, string name)
+    public static bool TryGetCustomProperty(object document, string name, out string value)
     {
         dynamic properties = ((dynamic)document).CustomDocumentProperties;
         try
         {
             dynamic property = properties.Item(name);
-            object value = property.Value;
+            value = Convert.ToString(property.Value);
             return true;
         }
         catch (Exception)
         {
+            value = null;
             return false;
         }
     }
 
+    public static bool HasCustomProperty(object document, string name)
+    {
+        string value;
+        return TryGetCustomProperty(document, name, out value);
+    }
+
     public static string GetCustomProperty(object document, string name)
     {
-        dynamic properties = ((dynamic)document).CustomDocumentProperties;
-        try
-        {
-            dynamic property = properties.Item(name);
-            return Convert.ToString(property.Value);
-        }
-        catch (Exception)
-        {
-            return null;
-        }
+        string value;
+        TryGetCustomProperty(document, name, out value);
+        return value;
     }
 
     public static void SetCustomProperty(object document, string name, string value)

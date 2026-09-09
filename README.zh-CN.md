@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-`mathtype-word` 可以把 Codex 生成的 LaTeX 公式插入 Word 文档的指定位置，并保留为可编辑的 MathType 公式。它支持句内公式、居中显示公式，以及由 MathType 原生编号命令管理的右编号公式。
+`mathtype-word` 可以把 Codex 生成的 LaTeX 公式插入 Word 文档的指定位置，并保留为可编辑的 MathType 公式。它也能直接为已有 MathType 显示公式添加原生右编号，而不重建 OLE 内容。
 
 项目遵循 [OpenAI skill 文件夹格式](https://learn.chatgpt.com/docs/build-skills)：可安装内容位于 `mathtype-word/`，入口是 `SKILL.md`，脚本和参考文档与其一起分发。
 
@@ -11,6 +11,7 @@
 - 通过 MathType 自带的 TeX 转换器把 LaTeX 转为可编辑的 `Equation.DSMT4` OLE 对象。
 - 使用唯一文本锚点或 Word 书签精确定位。
 - 支持 `inline`、`display` 和 `right-numbered` 三种模式。
+- 可按书签或 MathType 公式序号把已有显示公式转为原生右编号，且不重新执行 TeX 转换。
 - 右编号使用 MathType 原生 `MTEqn`/`MTPlaceRef` 字段，兼容 MathType 后续编号管理命令。
 - 以只读方式打开源文档，不覆盖已有输出；全部成功后才发布结果。
 - 生成结构化 JSON 报告，并可导出 PDF 供逐页检查。
@@ -57,7 +58,7 @@ skills/
 
 ## 在 Codex 中使用
 
-先在生成的 DOCX 中放置唯一锚点，再让 Codex 调用此 skill。例如：
+先在生成的 DOCX 中放置唯一锚点或书签，再让 Codex 调用此 skill；已有 MathType 公式也可以按序号定位。例如：
 
 ```text
 使用 $mathtype-word，把 [[MT:energy]] 替换为 E=mc^2 的内联 MathType
@@ -68,10 +69,6 @@ skills/
 Codex 会创建 JSON 清单并运行随附的 PowerShell 桥接脚本。也可以直接执行：
 
 ```powershell
-& .\mathtype-word\scripts\insert-equations.ps1 `
-  -Manifest .\examples\equations.example.json `
-  -ValidateOnly
-
 & .\mathtype-word\scripts\insert-equations.ps1 `
   -Manifest .\examples\equations.example.json
 ```
@@ -86,6 +83,21 @@ Codex 会创建 JSON 清单并运行随附的 PowerShell 桥接脚本。也可�
 
 完整格式见[清单说明](mathtype-word/references/manifest.md)和 [LaTeX 兼容性说明](mathtype-word/references/latex-compatibility.md)。
 
+给已有显示公式补编号时，可以使用包围其 OLE 对象的书签，或它在全部 MathType 公式中的一基序号：
+
+```json
+{
+  "input": "draft-with-display-equations.docx",
+  "output": "draft-with-native-numbers.docx",
+  "equations": [
+    {"bookmark": "mt_display_energy", "operation": "number-existing"},
+    {"equationIndex": 4, "operation": "number-existing"}
+  ]
+}
+```
+
+正式运行本身会完成清单和本机环境校验；`-ValidateOnly` 与 `-Probe` 仅用于首次配置、CI 或故障诊断。快速迭代时可以省略 `pdf`，需要版面验收时再导出。
+
 ## 校验与测试
 
 静态校验不需要 Word 或 MathType：
@@ -95,7 +107,7 @@ python tools/validate_release.py
 & .\scripts\validate.ps1
 ```
 
-集成测试会创建 DOCX 测试文件、插入六个公式、导出 PDF，并检查 OLE 对象和原生编号字段。该测试需要本机安装 Word 和 MathType：
+集成测试会先插入七个公式，再在第二次运行中为两个已有显示公式补编号。测试会确认 OLE 内容未被重建、后续编号顺序正确、无关字段保持不变，并成功导出两份 PDF。该测试需要本机安装 Word 和 MathType：
 
 ```powershell
 python -m pip install -r tests/requirements.txt

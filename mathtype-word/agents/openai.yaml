@@ -1,7 +1,7 @@
 interface:
   display_name: "MathType Word"
-  short_description: "Insert editable MathType equations into Word"
-  default_prompt: "Use $mathtype-word to insert LaTeX equations into my Word document at the marked locations."
+  short_description: "Insert and number editable MathType equations"
+  default_prompt: "Use $mathtype-word to insert or natively number editable MathType equations in my Word document."
 
 policy:
   allow_implicit_invocation: true

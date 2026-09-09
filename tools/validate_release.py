@@ -81,6 +81,36 @@ def validate_layout() -> None:
         )
 
 
+def validate_manifest_example(path: Path) -> None:
+    example = json.loads(read_text(path))
+    label = path.relative_to(ROOT)
+    require(set(example) <= {"input", "output", "pdf", "equations"}, f"{label} has unknown top-level fields")
+    require({"input", "output", "equations"} <= set(example), f"{label} is missing required fields")
+    require(isinstance(example["equations"], list) and example["equations"], f"{label} equations must be nonempty")
+
+    locators: set[str] = set()
+    allowed_fields = {"anchor", "bookmark", "equationIndex", "latex", "mode", "operation"}
+    for index, item in enumerate(example["equations"], start=1):
+        require(set(item) <= allowed_fields, f"{label} equation {index} has unknown fields")
+        operation = item.get("operation", "insert-latex")
+        require(operation in {"insert-latex", "number-existing"}, f"{label} equation {index} has an invalid operation")
+        if operation == "insert-latex":
+            require(("anchor" in item) ^ ("bookmark" in item), f"{label} equation {index} needs anchor or bookmark")
+            require("equationIndex" not in item, f"{label} equation {index} cannot use equationIndex")
+            require(item.get("mode") in {"inline", "display", "right-numbered"}, f"{label} equation {index} has an invalid mode")
+            require(isinstance(item.get("latex"), str) and item["latex"].strip(), f"{label} equation {index} has empty LaTeX")
+        else:
+            require("anchor" not in item, f"{label} equation {index} cannot use an anchor")
+            require(("bookmark" in item) ^ ("equationIndex" in item), f"{label} equation {index} needs bookmark or equationIndex")
+            require("latex" not in item and "mode" not in item, f"{label} equation {index} has redundant conversion fields")
+            if "equationIndex" in item:
+                require(isinstance(item["equationIndex"], int) and item["equationIndex"] > 0, f"{label} equation {index} has an invalid equationIndex")
+        locator = item.get("anchor", item.get("bookmark", item.get("equationIndex")))
+        locator_key = f"{type(locator).__name__}:{locator}"
+        require(locator_key not in locators, f"Duplicate locator in {label}: {locator}")
+        locators.add(locator_key)
+
+
 def validate_version_and_example() -> None:
     version = read_text(ROOT / "VERSION").strip()
     require(
@@ -94,20 +124,8 @@ def validate_version_and_example() -> None:
         "Root and skill third-party notices differ",
     )
 
-    example = json.loads(read_text(ROOT / "examples" / "equations.example.json"))
-    require(set(example) <= {"input", "output", "pdf", "equations"}, "Example has unknown top-level fields")
-    require({"input", "output", "equations"} <= set(example), "Example is missing required fields")
-    require(isinstance(example["equations"], list) and example["equations"], "Example equations must be nonempty")
-
-    locators: set[str] = set()
-    for index, item in enumerate(example["equations"], start=1):
-        require(set(item) <= {"anchor", "bookmark", "latex", "mode"}, f"Equation {index} has unknown fields")
-        require(("anchor" in item) ^ ("bookmark" in item), f"Equation {index} needs exactly one locator")
-        require(item.get("mode") in {"inline", "display", "right-numbered"}, f"Equation {index} has an invalid mode")
-        require(isinstance(item.get("latex"), str) and item["latex"].strip(), f"Equation {index} has empty LaTeX")
-        locator = item.get("anchor", item.get("bookmark"))
-        require(locator not in locators, f"Duplicate example locator: {locator}")
-        locators.add(locator)
+    validate_manifest_example(ROOT / "examples" / "equations.example.json")
+    validate_manifest_example(ROOT / "examples" / "number-existing.example.json")
 
 
 def validate_local_markdown_links() -> None:
