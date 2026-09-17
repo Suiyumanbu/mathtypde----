@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
 import json
 import re
 import zipfile
 
 
-root = Path(__file__).resolve().parent / 'output'
+parser = argparse.ArgumentParser()
+parser.add_argument('--output', type=Path, default=Path(__file__).resolve().parent / 'output')
+root = parser.parse_args().output.resolve()
 
 
 def inspect_docx(name: str) -> dict:

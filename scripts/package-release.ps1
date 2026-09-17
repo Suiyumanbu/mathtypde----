@@ -36,6 +36,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $root $name) -Destination $bundleRoot
     }
     Copy-Item -LiteralPath (Join-Path $root 'mathtype-word') -Destination $bundleRoot -Recurse
+    Copy-Item -LiteralPath (Join-Path $root 'examples') -Destination $bundleRoot -Recurse
 
     Compress-Archive -LiteralPath $bundleRoot -DestinationPath $zipPath -CompressionLevel Optimal
     $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()

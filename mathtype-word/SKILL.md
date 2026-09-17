@@ -20,6 +20,8 @@ Create or edit the ordinary document content first. Put a unique text anchor at 
 
 Generate a manifest as described in [references/manifest.md](references/manifest.md). For new formulas, supply a self-contained LaTeX math body; outer `$...$`, `\(...\)`, `$$...$$`, or `\[...\]` delimiters are optional because the script chooses them from `mode`.
 
+Batch all requested formulas in one manifest rather than launching Word once per formula. If the final result needs right numbers, insert new formulas directly as `right-numbered`; use `number-existing` only for OLE equations already present in the input.
+
 Run the conversion directly; it validates the manifest and environment before Word is launched:
 
 ```powershell
@@ -51,7 +53,7 @@ Match validation cost to the stage of work:
 
 1. For every run, read the report and require `progId: Equation.DSMT4`; require positive `nativeNumberFields` for right-numbered results. For `number-existing`, also require `source: existing` and `conversionMilliseconds: 0`.
 2. During iteration, omit `pdf` unless layout evidence is needed. Structural inspection is sufficient to catch missing OLE objects, anchors, or native number fields.
-3. For review, export a PDF and inspect each page containing a changed equation. Inspect every page only for a final deliverable, a document-wide layout change, or an explicit user request.
+3. For review, export a PDF and inspect pages containing changed equations or downstream numbers. Inspect every page only for a final deliverable, a document-wide layout change, or an explicit user request.
 4. Record visual approval in `visualReview` only when a PDF was actually inspected.
 
 For `number-existing`, the embedding count and OLE payloads should remain unchanged while `MTPlaceRef` and `SEQ MTEqn` fields increase. For LaTeX insertion, expect one new embedding per formula.

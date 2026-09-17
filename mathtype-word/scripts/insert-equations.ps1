@@ -80,7 +80,8 @@ function Find-InsertedEquation($Document, [int]$ExpectedStart, [int]$ExpectedInd
 
 function Get-FieldCodes($Range) {
     $codes = [Collections.Generic.List[string]]::new()
-    for ($fieldIndex = 1; $fieldIndex -le $Range.Fields.Count; $fieldIndex++) {
+    $fieldCount = [int]$Range.Fields.Count
+    for ($fieldIndex = 1; $fieldIndex -le $fieldCount; $fieldIndex++) {
         $codes.Add([string]$Range.Fields.Item($fieldIndex).Code.Text)
     }
     return $codes.ToArray()
@@ -108,19 +109,23 @@ function Add-NativeEquationNumber($Word, $Shape) {
 
 function Update-NativeEquationNumbers($Document, [int]$Start) {
     $searchRange = $Document.Range($Start, $Document.Content.End)
-    $paragraphStarts = [Collections.Generic.SortedSet[int]]::new()
-    for ($fieldIndex = 1; $fieldIndex -le $searchRange.Fields.Count; $fieldIndex++) {
+    $numberFields = [Collections.Generic.List[object]]::new()
+    $paragraphStarts = [Collections.Generic.HashSet[int]]::new()
+    $fieldCount = [int]$searchRange.Fields.Count
+    for ($fieldIndex = 1; $fieldIndex -le $fieldCount; $fieldIndex++) {
         $field = $searchRange.Fields.Item($fieldIndex)
         if ([string]$field.Code.Text -match 'MACROBUTTON MTPlaceRef') {
             $null = $paragraphStarts.Add([int]$field.Code.Paragraphs.Item(1).Range.Start)
+            $numberFields.Add($field)
         }
     }
-    foreach ($paragraphStart in $paragraphStarts) {
-        $paragraph = $Document.Range($paragraphStart, $paragraphStart).Paragraphs.Item(1).Range
-        # MTPlaceRef contains nested sequence fields. Two targeted passes update the
-        # inner sequence and then its enclosing display without touching unrelated fields.
-        $null = $paragraph.Fields.Update()
-        $null = $paragraph.Fields.Update()
+    foreach ($numberField in $numberFields) {
+        # MTPlaceRef contains nested sequence fields. Update the inner sequence
+        # once before its enclosing display, without touching unrelated fields.
+        # Range.Fields may include an adjacent field at a boundary. Update the
+        # actual native field object and its own nested collection instead.
+        $null = $numberField.Code.Fields.Update()
+        $null = $numberField.Update()
     }
     return $paragraphStarts.Count
 }
@@ -407,13 +412,13 @@ try {
             if ($paragraph.InlineShapes.Count -ne 1) {
                 throw 'An existing equation must be the only inline object in its paragraph.'
             }
-            $ordinaryText = ([string]$paragraph.Text).Replace([string][char]1, '').Trim([char[]]" `t`r`n")
-            if (-not [string]::IsNullOrWhiteSpace($ordinaryText)) {
-                throw 'An existing equation must occupy its own paragraph before it can be numbered.'
-            }
             $codes = @(Get-FieldCodes $paragraph)
             if (($codes -match 'MACROBUTTON MTPlaceRef') -or ($codes -match 'SEQ MTEqn')) {
                 throw "The target '$location' is already right-numbered."
+            }
+            $ordinaryText = ([string]$paragraph.Text).Replace([string][char]1, '').Trim([char[]]" `t`r`n")
+            if (-not [string]::IsNullOrWhiteSpace($ordinaryText)) {
+                throw 'An existing equation must occupy its own paragraph before it can be numbered.'
             }
             $mode = 'right-numbered'
         }
@@ -432,7 +437,6 @@ try {
                 }
             }
         }
-        $initialShapesBefore = @($initialInlineShapeStarts | Where-Object { $_ -lt [int]$range.Start }).Count
         $plan.Add([pscustomobject]@{
             Item = $item
             Operation = $operation
@@ -440,12 +444,22 @@ try {
             Mode = $mode
             Range = $range
             ExistingShape = $existingShape
-            InitialShapesBefore = $initialShapesBefore
+            InitialShapesBefore = 0
             Start = [int]$range.Start
             End = [int]$range.End
         })
     }
     $orderedPlan = @($plan | Sort-Object Start, End)
+    # Both lists are in document order. Advance once instead of scanning all cached
+    # positions for each locator; no per-equation full-document COM traversal.
+    $initialShapeCursor = 0
+    foreach ($target in $orderedPlan) {
+        while ($initialShapeCursor -lt $initialInlineShapeStarts.Count -and
+               $initialInlineShapeStarts[$initialShapeCursor] -lt $target.Start) {
+            $initialShapeCursor++
+        }
+        $target.InitialShapesBefore = $initialShapeCursor
+    }
     for ($planIndex = 1; $planIndex -lt $orderedPlan.Count; $planIndex++) {
         $prior = $orderedPlan[$planIndex - 1]
         $current = $orderedPlan[$planIndex]

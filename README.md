@@ -36,7 +36,7 @@ Download the ZIP from the repository's **Releases** page, extract it, and run:
 & .\install.ps1
 ```
 
-The installer uses `$CODEX_HOME/skills` when `CODEX_HOME` is set. Otherwise it prefers an existing `~/.agents/skills`, then an existing `~/.codex/skills`, and falls back to `~/.agents/skills`. Pass `-DestinationRoot` to choose another skill root. Existing installations are left untouched unless `-Upgrade` is supplied; upgrades keep a timestamped backup.
+The installer uses `$CODEX_HOME/skills` when `CODEX_HOME` is set. Otherwise it prefers an existing `~/.agents/skills`, then an existing `~/.codex/skills`, and falls back to `~/.agents/skills`. Pass `-DestinationRoot` to choose another skill root. Existing installations are left untouched unless `-Upgrade` is supplied; upgrades keep a timestamped backup in `skill-backups/` beside `skills`, outside skill discovery.
 
 ### Manual install
 
@@ -100,6 +100,8 @@ The runtime validates manifests and the local installation during a normal run. 
 
 ## Validate and test
 
+The developer commands below require a full source checkout; the installation ZIP contains the skill, installer, and examples.
+
 Static checks do not require Word or MathType:
 
 ```powershell
@@ -112,6 +114,23 @@ The integration test inserts seven equations, then numbers two existing display 
 ```powershell
 python -m pip install -r tests/requirements.txt
 & .\tests\run-integration.ps1
+```
+
+The test also covers reversed manifests, mixed insert/reuse operations, adjacent-field preservation, duplicate numbering rejection, invalid locators, and source/output protection. Each run uses a new output directory and preserves earlier evidence.
+
+The batch benchmark uses 500 body paragraphs and compares recreating and numbering 10/50 equations with reusing their OLE payloads. It runs each strategy three times in alternating order, reports full-process median wall time, and verifies all sequence values and OLE payloads. No PDF is exported during iteration:
+
+```powershell
+& .\tests\run-performance.ps1
+```
+
+Local 0.2.1 results on 2026-09-17 (Word 2024, MathType 7.11), using three-run medians: 10 equations took 12.56 s to recreate versus 11.72 s to reuse (6.7% less); 50 took 35.02 s versus 24.08 s (31.2% less). This compares workflows within the same version, includes process startup and Word shutdown, and is not a direct old/new version comparison. Results vary with machine and load. All reused OLE payloads and sequence results passed verification.
+
+Verify package/source parity, packaged examples, recoverable upgrade backups, and single skill discovery:
+
+```powershell
+& .\scripts\package-release.ps1
+& .\tests\test-release.ps1
 ```
 
 ## Build a release ZIP

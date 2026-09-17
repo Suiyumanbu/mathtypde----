@@ -1,12 +1,15 @@
 from pathlib import Path
+import argparse
 import json
 from docx import Document
 from docx.shared import Pt
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-out = Path(__file__).resolve().parent / 'output'
-out.mkdir(exist_ok=True)
+parser = argparse.ArgumentParser()
+parser.add_argument('--output', type=Path, default=Path(__file__).resolve().parent / 'output')
+out = parser.parse_args().output.resolve()
+out.mkdir(parents=True, exist_ok=True)
 doc = Document()
 doc.styles['Normal'].font.name = 'Times New Roman'
 doc.styles['Normal'].font.size = Pt(12)
@@ -68,6 +71,7 @@ config = {
         {'anchor': '[[EQ:numbered2]]', 'latex': r'\sum_{i=1}^{n}i=\frac{n(n+1)}{2}', 'mode': 'right-numbered'},
     ],
 }
+config['equations'].reverse()  # Array order must not affect document-order insertion.
 (out / 'equations.json').write_text(json.dumps(config, indent=2), encoding='utf-8')
 
 number_existing = {
@@ -79,6 +83,7 @@ number_existing = {
         {'equationIndex': 5, 'operation': 'number-existing'},
     ],
 }
+number_existing['equations'].reverse()
 (out / 'number-existing.json').write_text(
     json.dumps(number_existing, indent=2), encoding='utf-8'
 )

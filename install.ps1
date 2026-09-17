@@ -51,6 +51,19 @@ $targetParent = [IO.DirectoryInfo]::new($target).Parent.FullName.TrimEnd('\')
 if ($targetParent -ine $destinationFull.TrimEnd('\')) {
     throw 'The resolved skill target is outside the requested destination root.'
 }
+if ($target.TrimEnd('\') -ieq [IO.Path]::GetFullPath($source).TrimEnd('\')) {
+    throw 'The installation target must differ from the source skill directory.'
+}
+
+# Backups must not live under the discovery root: their SKILL.md would otherwise
+# register another copy of the same skill on the next Codex refresh.
+$destinationParent = [IO.DirectoryInfo]::new($destinationFull).Parent
+if ($null -eq $destinationParent) { throw 'The skills destination must not be a filesystem root.' }
+$backupRoot = [IO.Path]::GetFullPath((Join-Path $destinationParent.FullName 'skill-backups'))
+if ($backupRoot -ieq $destinationFull.TrimEnd('\') -or
+    $backupRoot.StartsWith($destinationFull.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The backup directory must be outside the skills discovery root.'
+}
 
 if ((Test-Path -LiteralPath $target) -and -not $Upgrade) {
     throw "The skill is already installed at '$target'. Re-run with -Upgrade to keep a backup and install this version."
@@ -62,8 +75,9 @@ try {
     Copy-Item -LiteralPath $source -Destination $staged -Recurse
 
     if (Test-Path -LiteralPath $target) {
-        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-        $backup = Join-Path $destinationFull ("$skillName.backup-$stamp")
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+        $null = [IO.Directory]::CreateDirectory($backupRoot)
+        $backup = Join-Path $backupRoot ("$skillName.backup-$stamp")
         if (Test-Path -LiteralPath $backup) {
             throw "Backup path already exists: $backup"
         }

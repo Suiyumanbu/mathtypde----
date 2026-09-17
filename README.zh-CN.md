@@ -36,7 +36,7 @@
 & .\install.ps1
 ```
 
-若设置了 `CODEX_HOME`，安装器会使用 `$CODEX_HOME/skills`；否则依次选择已经存在的 `~/.agents/skills`、`~/.codex/skills`，都不存在时使用 `~/.agents/skills`。可用 `-DestinationRoot` 指定其他目录。默认不会覆盖已有安装；使用 `-Upgrade` 时，旧版本会先保存为带时间戳的备份。
+若设置了 `CODEX_HOME`，安装器会使用 `$CODEX_HOME/skills`；否则依次选择已经存在的 `~/.agents/skills`、`~/.codex/skills`，都不存在时使用 `~/.agents/skills`。可用 `-DestinationRoot` 指定其他目录。默认不会覆盖已有安装；使用 `-Upgrade` 时，旧版本会保存在 `skills` 同级的 `skill-backups/` 中，不再被识别为重复技能。
 
 ### 手动安装
 
@@ -100,6 +100,8 @@ Codex 会创建 JSON 清单并运行随附的 PowerShell 桥接脚本。也可�
 
 ## 校验与测试
 
+以下开发测试命令需在完整源码仓库中运行；安装用 ZIP 只包含技能、安装器和示例。
+
 静态校验不需要 Word 或 MathType：
 
 ```powershell
@@ -112,6 +114,23 @@ python tools/validate_release.py
 ```powershell
 python -m pip install -r tests/requirements.txt
 & .\tests\run-integration.ps1
+```
+
+测试还覆盖乱序清单、混合插入/补编号、相邻字段保护、重复编号拒绝、定位失败和原文件/输出保护。每次测试使用独立输出目录，不删除之前的结果。
+
+批量性能基准使用 500 个正文段落，分别比较 10 和 50 个公式的“从 LaTeX 重建并编号”与“复用 OLE 补编号”，每种策略运行三次、交替执行，报告完整进程耗时的中位数并验证每个编号及 OLE 内容。迭代基准不导出 PDF：
+
+```powershell
+& .\tests\run-performance.ps1
+```
+
+2026-09-17 本机 0.2.1（Word 2024、MathType 7.11）的三次运行中位数：10 个公式由 12.56 秒降至 11.72 秒（减少 6.7%），50 个公式由 35.02 秒降至 24.08 秒（减少 31.2%）。这是同一版本内“重建并编号”与“复用补编号”的对比，包含进程启动和 Word 关闭，不是旧版本与新版本的直接对比；具体收益受机器及负载影响。全部复用公式的 OLE 内容和编号均通过校验。
+
+发行包校验同时检查 ZIP 与源文件一致、示例齐全、备份可恢复且不进入技能发现目录：
+
+```powershell
+& .\scripts\package-release.ps1
+& .\tests\test-release.ps1
 ```
 
 ## 构建发行包

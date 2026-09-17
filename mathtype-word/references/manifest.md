@@ -71,4 +71,4 @@ Top-level fields are `input`, `output`, optional `pdf`, and `equations`. Unknown
 
 The output DOCX, optional PDF, and sibling report must not already exist. Use a new output name when retrying so the original and earlier results remain recoverable.
 
-The report includes per-operation conversion and numbering times plus overall phase timings. A `number-existing` entry should report `source: "existing"` and `conversionMilliseconds: 0`.
+The report includes per-operation conversion and numbering times plus overall phase timings. A `number-existing` entry should report `source: "existing"` and `conversionMilliseconds: 0`. `processingMilliseconds` ends after save/export and excludes publication and Word shutdown; the repository performance runner also measures full process wall time.
